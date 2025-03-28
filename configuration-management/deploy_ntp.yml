@@ -1,0 +1,34 @@
+---
+- name: Deploy and configure NTP
+  hosts: ntp_servers
+  become: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  tasks:
+    - name: Install NTP package
+      package:
+        name: ntp
+        state: present
+
+    - name: Create custom ntp.conf
+      template:
+        src: ntp.conf
+        dest: /etc/ntp.conf
+        owner: root
+        group: root
+        mode: 0644
+        backup: yes
+      notify: restart ntpd
+
+    - name: Ensure NTP service is running and enabled
+      service:
+        name: ntpd
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: restart ntpd
+      service:
+        name: ntpd
+        state: restarted

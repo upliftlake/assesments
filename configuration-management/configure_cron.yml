@@ -1,0 +1,19 @@
+---
+- name: Configure logrotate cron job
+  hosts: all
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+
+  tasks:
+  - name: Run Cron Logrotate
+    become: yes
+    become_method: sudo
+    cron:
+      name: "run logrotate"
+      user: "root"
+      minute: "*/10"
+      hour: "2-4"
+      job: "/usr/sbin/logrotate /etc/logrotate.conf > ~/log_$(date +'%Y%m%d-%H%M%S').txt"
+    tags:
+      - cron
+      - logrotate  

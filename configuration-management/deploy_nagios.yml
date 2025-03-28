@@ -1,0 +1,59 @@
+- name: Deploy Nagios monitoring configuration
+  hosts: monitoring.fra1.internal
+  become: yes
+  vars:
+    nagios_config_dir: /usr/local/nagios/etc/objects
+    monitored_hosts: "{{ groups['ntp_servers'] }}"
+    ansible_python_interpreter: /usr/bin/python3
+
+  tasks:
+    - name: Create directory for host configurations
+      file:
+        path: "{{ nagios_config_dir }}/hosts"
+        state: directory
+        owner: nagios
+        group: nagios
+        mode: 0755
+
+    - name: Create directory for service configurations
+      file:
+        path: "{{ nagios_config_dir }}/services"
+        state: directory
+        owner: nagios
+        group: nagios
+        mode: 0755
+
+    - name: Deploy host configurations for all servers
+      template:
+        src: templates/nagios/host.cfg.j2
+        dest: "{{ nagios_config_dir }}/hosts/{{ item }}.cfg"
+        owner: nagios
+        group: nagios
+        mode: 0644
+      loop: "{{ monitored_hosts }}"
+      vars:
+        inventory_hostname: "{{ hostvars[item].inventory_hostname }}"
+        ansible_host: "{{ hostvars[item].ansible_host }}"
+
+    - name: Deploy NTP service configurations for all servers
+      template:
+        src: templates/nagios/service.cfg.j2
+        dest: "{{ nagios_config_dir }}/services/ntp_{{ item }}.cfg"
+        owner: nagios
+        group: nagios
+        mode: 0644
+      loop: "{{ monitored_hosts }}"
+      vars:
+        inventory_hostname: "{{ hostvars[item].inventory_hostname }}"
+
+    - name: Validate Nagios configuration
+      command: /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
+      register: nagios_validation
+      changed_when: false
+      failed_when: "nagios_validation.rc != 0"
+
+    - name: Restart Nagios if configuration changed
+      service:
+        name: nagios
+        state: restarted
+      when: nagios_validation.rc == 0

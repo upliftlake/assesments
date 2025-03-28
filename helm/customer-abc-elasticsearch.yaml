@@ -1,0 +1,284 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    esMajorVersion: "7"
+    meta.helm.sh/release-name: elasticsearch
+    meta.helm.sh/release-namespace: default
+  creationTimestamp: "2025-03-26T10:18:06Z"
+  generation: 1
+  labels:
+    app: customer-abc-elasticsearch
+    app.kubernetes.io/managed-by: Helm
+  name: customer-abc-elasticsearch
+  namespace: default
+  resourceVersion: "923638248"
+  uid: 5010f269-dbd1-451a-91a7-7af0b20e3947
+spec:
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  podManagementPolicy: Parallel
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: customer-abc-elasticsearch
+  serviceName: customer-abc-elasticsearch-headless
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: customer-abc-elasticsearch
+      name: customer-abc-elasticsearch
+    spec:
+      automountServiceAccountToken: true
+      containers:
+      - env:
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.name
+        - name: cluster.initial_master_nodes
+          value: customer-abc-elasticsearch-0,customer-abc-elasticsearch-1,customer-abc-elasticsearch-2,
+        - name: discovery.seed_hosts
+          value: customer-abc-elasticsearch-headless
+        - name: cluster.name
+          value: customer-abc-elasticsearch
+        - name: network.host
+          value: 0.0.0.0
+        - name: cluster.deprecation_indexing.enabled
+          value: "false"
+        - name: ES_JAVA_OPTS
+          value: -Xmx1g -Xms1g
+        - name: node.data
+          value: "true"
+        - name: node.ingest
+          value: "true"
+        - name: node.master
+          value: "true"
+        - name: node.ml
+          value: "true"
+        - name: node.remote_cluster_client
+          value: "true"
+        image: elasticsearch:7.17.3
+        imagePullPolicy: IfNotPresent
+        name: elasticsearch
+        ports:
+        - containerPort: 9200
+          name: http
+          protocol: TCP
+        - containerPort: 9300
+          name: transport
+          protocol: TCP
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - |
+              set -e
+              # If the node is starting up wait for the cluster to be ready (request params: "wait_for_status=green&timeout=1s" )
+              # Once it has started only check that the node itself is responding
+              START_FILE=/tmp/.es_start_file
+
+              # Disable nss cache to avoid filling dentry cache when calling curl
+              # This is required with Elasticsearch Docker using nss < 3.52
+              export NSS_SDB_USE_CACHE=no
+
+              http () {
+                local path="${1}"
+                local args="${2}"
+                set -- -XGET -s
+
+                if [ "$args" != "" ]; then
+                  set -- "$@" $args
+                fi
+
+                if [ -n "${ELASTIC_PASSWORD}" ]; then
+                  set -- "$@" -u "elastic:${ELASTIC_PASSWORD}"
+                fi
+
+                curl --output /dev/null -k "$@" "http://127.0.0.1:9200${path}"
+              }
+
+              if [ -f "${START_FILE}" ]; then
+                echo 'Elasticsearch is already running, lets check the node is healthy'
+                HTTP_CODE=$(http "/" "-w %{http_code}")
+                RC=$?
+                if [[ ${RC} -ne 0 ]]; then
+                  echo "curl --output /dev/null -k -XGET -s -w '%{http_code}' \${BASIC_AUTH} http://127.0.0.1:9200/ failed with RC ${RC}"
+                  exit ${RC}
+                fi
+                # ready if HTTP code 200, 503 is tolerable if ES version is 6.x
+                if [[ ${HTTP_CODE} == "200" ]]; then
+                  exit 0
+                elif [[ ${HTTP_CODE} == "503" && "7" == "6" ]]; then
+                  exit 0
+                else
+                  echo "curl --output /dev/null -k -XGET -s -w '%{http_code}' \${BASIC_AUTH} http://127.0.0.1:9200/ failed with HTTP code ${HTTP_CODE}"
+                  exit 1
+                fi
+
+              else
+                echo 'Waiting for elasticsearch cluster to become ready (request params: "wait_for_status=green&timeout=1s" )'
+                if http "/_cluster/health?wait_for_status=green&timeout=1s" "--fail" ; then
+                  touch ${START_FILE}
+                  exit 0
+                else
+                  echo 'Cluster is not yet ready (request params: "wait_for_status=green&timeout=1s" )'
+                  exit 1
+                fi
+              fi
+          failureThreshold: 3
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          successThreshold: 3
+          timeoutSeconds: 5
+        resources:
+          limits:
+            cpu: "1"
+            memory: 4Gi
+          requests:
+            cpu: 200m
+            memory: 2Gi
+        securityContext:
+          capabilities:
+            drop:
+            - ALL
+          runAsNonRoot: true
+          runAsUser: 1000
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/data
+          name: customer-abc-elasticsearch
+        - mountPath: /usr/share/elasticsearch/logs
+          name: elasticsearch-log
+      - env:
+        - name: ES_URI
+          valueFrom:
+            secretKeyRef:
+              key: esURI
+              name: es-secret
+        image: prometheuscommunity/elasticsearch-exporter:v1.5.0
+        imagePullPolicy: IfNotPresent
+        name: elasticsearch-exporter
+        ports:
+        - containerPort: 9114
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      - env:
+        - name: LOGS_DIRECTORIES
+          value: /usr/share/elasticsearch/logs
+        - name: LOGROTATE_INTERVAL
+          value: hourly
+        - name: LOGROTATE_COPIES
+          value: "1"
+        - name: LOGROTATE_POSTROTATE_COMMAND
+          value: pkill -SIGUSR1 elasticsearch >/dev/null 2>&1
+        - name: LOGROTATE_SIZE
+          value: 10M
+        image: blacklabelops/logrotate:1.3
+        imagePullPolicy: Always
+        name: elasticsearch-logrotate
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/logs/
+          name: elasticsearch-log
+      - args:
+        - /bin/sh
+        - -c
+        - apt-get update && apt-get install -y build-essential && fluent-gem install
+          --install-dir /tmp/bundle fluent-plugin-gelf && exec /usr/local/bundle/bin/fluentd
+          -c /etc/fluentd-config/fluentd.conf
+        env:
+        - name: TINI_SUBREAPER
+        - name: BUNDLE_PATH
+          value: /tmp/bundle
+        - name: GEM_PATH
+          value: /tmp/bundle
+        image: fluent/fluentd:v1.16.3-debian-1.0
+        imagePullPolicy: Always
+        name: elasticsearch-fluentd
+        resources: {}
+        securityContext:
+          allowPrivilegeEscalation: true
+          privileged: true
+          runAsUser: 0
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts:
+        - mountPath: /usr/share/elasticsearch/logs/
+          name: elasticsearch-log
+        - mountPath: /etc/fluentd-config/fluentd.conf
+          name: config-volume
+          subPath: fluentd.conf
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      initContainers:
+      - command:
+        - sysctl
+        - -w
+        - vm.max_map_count=262144
+        image: elasticsearch:7.17.3
+        imagePullPolicy: IfNotPresent
+        name: configure-sysctl
+        resources:
+          limits:
+            cpu: 25m
+            memory: 128Mi
+          requests:
+            cpu: 25m
+            memory: 128Mi
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      terminationGracePeriodSeconds: 120
+      volumes:
+      - emptyDir: {}
+        name: elasticsearch-log
+      - configMap:
+          defaultMode: 420
+          name: elasticsearch-fluentd-config
+        name: config-volume
+  updateStrategy:
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      creationTimestamp: null
+      name: customer-abc-elasticsearch
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: longhorn
+      volumeMode: Filesystem
+    status:
+      phase: Pending
+status:
+  availableReplicas: 3
+  collisionCount: 0
+  currentReplicas: 3
+  currentRevision: customer-abc-elasticsearch-748cbcbff6
+  observedGeneration: 1
+  readyReplicas: 3
+  replicas: 3
+  updateRevision: customer-abc-elasticsearch-748cbcbff6
+  updatedReplicas: 3

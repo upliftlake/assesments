@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    restart: unless-stopped
+    ports:
+      - "5880:80"
+      - "5443:443"
+    volumes:
+      - nginx_logs:/var/log/nginx
+    networks:
+      nginx_network:
+        ipv4_address: 172.20.8.10
+
+networks:
+  nginx_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.8.0/24
+
+volumes:
+  nginx_logs:
